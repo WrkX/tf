@@ -1,0 +1,65 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/coreml",
+    "crates/diarize",
+    "crates/stt",
+    "crates/apple",
+    "crates/audio",
+    "crates/models",
+    "crates/llm",
+    "crates/store",
+    "crates/meeting",
+    "crates/app",
+    "xtask",
+]
+default-members = ["crates/app", "xtask"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+publish = false
+
+[workspace.dependencies]
+tf-apple = { path = "crates/apple" }
+tf-audio = { path = "crates/audio" }
+tf-core = { path = "crates/core" }
+tf-stt = { path = "crates/stt" }
+tf-coreml = { path = "crates/coreml" }
+tf-diarize = { path = "crates/diarize" }
+tf-models = { path = "crates/models" }
+tf-llm = { path = "crates/llm" }
+tf-store = { path = "crates/store" }
+tf-meeting = { path = "crates/meeting" }
+
+objc2 = "0.6.5"
+dispatch2 = "0.3.1"
+objc2-av-foundation = "0.3.2"
+objc2-avf-audio = "0.3.2"
+objc2-core-foundation = "0.3.2"
+objc2-foundation = "0.3.2"
+objc2-app-kit = "0.3.2"
+objc2-core-ml = "0.3.2"
+objc2-core-audio = "0.3.2"
+objc2-core-audio-types = "0.3.2"
+objc2-quartz-core = "0.3.2"
+objc2-core-graphics = { version = "0.3.2", default-features = false, features = [
+    "CGEvent",
+    "CGEventSource",
+    "CGEventTypes",
+    "CGRemoteOperation",
+] }
+block2 = "0.6.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+hound = "3.5"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true

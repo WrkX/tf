@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>tf</string>
+	<key>CFBundleDisplayName</key>
+	<string>tf</string>
+	<key>CFBundleIdentifier</key>
+	<string>dev.tf.dictation</string>
+	<key>CFBundleExecutable</key>
+	<string>tf</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$VERSION</string>
+	<key>CFBundleVersion</key>
+	<string>$VERSION</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>26.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	  <key>NSMicrophoneUsageDescription</key>
+	  <string>tf records your voice while you dictate. Audio never leaves your Mac unless you enable a cloud engine.</string>
+	  <key>NSSpeechRecognitionUsageDescription</key>
+	  <string>tf transcribes your dictation on this Mac using Apple's speech engine.</string>
+	  <key>NSAudioCaptureUsageDescription</key>
+	  <string>tf records call audio to transcribe meetings on this Mac.</string>
+	  <key>NSUserNotificationAlertStyle</key>
+	  <string>alert</string>
+	</dict>
+</plist>

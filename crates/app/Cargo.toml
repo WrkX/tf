@@ -1,0 +1,31 @@
+[package]
+name = "tf-app"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "tf"
+path = "src/main.rs"
+
+[dependencies]
+tf-core.workspace = true
+tf-models.workspace = true
+tf-apple.workspace = true
+tf-llm.workspace = true
+tf-audio.workspace = true
+tf-store.workspace = true
+tf-meeting.workspace = true
+tf-diarize.workspace = true
+objc2.workspace = true
+dispatch2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+objc2-av-foundation.workspace = true
+objc2-avf-audio = { workspace = true, features = ["AVAudioPlayer"] }
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
+objc2-quartz-core = { workspace = true, features = ["objc2-core-graphics", "objc2-core-foundation"] }
+objc2-service-management = "0.3.2"
+block2.workspace = true
+serde_json.workspace = true

@@ -1,0 +1,7 @@
+[alias]
+xtask = "run -q --package xtask --"
+
+[target.aarch64-apple-darwin]
+# die swift-bridge nutzt die os-swift-runtime. test-binaries erben den rpath
+# aus build.rs nicht, deshalb wird er für jeden link gesetzt.
+rustflags = ["-C", "link-arg=-Wl,-rpath,/usr/lib/swift"]

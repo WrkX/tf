@@ -1,0 +1,9 @@
+[package]
+name = "tf-store"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+rusqlite = { version = "0.37.0", default-features = false }
+thiserror.workspace = true
