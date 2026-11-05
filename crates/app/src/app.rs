@@ -581,7 +581,8 @@ impl AppDelegate {
             {
                 live.set_elapsed(started.elapsed().as_secs());
             }
-            if self.ivars().detector.borrow_mut().should_stop(&apps, &bundle, now) {
+            let audio_apps = tf_meeting::detect::running_audio_apps();
+            if self.ivars().detector.borrow_mut().should_stop(&audio_apps, &bundle, now) {
                 self.stop_meeting();
             }
             self.update_status();
@@ -2055,6 +2056,16 @@ impl AppDelegate {
             (method, config.insertion.append_space, insert_extras(&config))
         };
         let text = shape(&take.final_text, append_space);
+        let frontmost = NSWorkspace::sharedWorkspace()
+            .frontmostApplication()
+            .and_then(|application| application.bundleIdentifier())
+            .map(|id| id.to_string());
+        if frontmost != take.app_bundle_id {
+            tf_core::log_warn!(
+                "focus moved from {:?} to {frontmost:?} during dictation, inserting into the new app",
+                take.app_bundle_id
+            );
+        }
         match insert::insert(&text, method, extras) {
             Ok(Outcome::Inserted) => StoreOutcome::Inserted,
             Ok(Outcome::CopiedSecure | Outcome::CopiedNoAccess) => StoreOutcome::Copied,

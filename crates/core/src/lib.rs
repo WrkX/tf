@@ -1,6 +1,7 @@
 //! ui-unabhängiger zustand, konfiguration und pipeline-orchestrierung. `core` linkt nie gegen appkit. die app reicht ihm jobs rein und bekommt events auf einem worker-thread zurück.
 
 pub mod config;
+pub mod language;
 pub mod log;
 pub mod mode;
 pub mod paths;

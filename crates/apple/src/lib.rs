@@ -2,6 +2,7 @@
 
 mod ffi;
 pub mod foundation_models;
+pub mod language;
 pub mod speech;
 
 #[derive(Debug, thiserror::Error)]

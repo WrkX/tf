@@ -1426,7 +1426,8 @@ fn refine(
         Err(e) => return (text.to_owned(), None, None, Some(e)),
     };
     let vocabulary = if mode.use_vocabulary { config.vocabulary.terms_text() } else { Vec::new() };
-    let system = prompt::system_prompt(mode, &vocabulary);
+    let language = crate::language::name(text);
+    let system = prompt::system_prompt(mode, &vocabulary, language.as_deref());
     let user = prompt::user_prompt(text);
     let timeout = Duration::from_millis(u64::from(if refine.timeout_ms == 0 {
         DEFAULT_TIMEOUT_MS
@@ -1441,6 +1442,10 @@ fn refine(
     match result {
         Ok(output) => {
             let cleaned = prompt::clean_output(&output, text);
+            if crate::language::drifted(text, &cleaned) {
+                crate::log_warn!("the language model changed the language, keeping the transcript");
+                return (text.to_owned(), None, Some(elapsed), None);
+            }
             let label = refine
                 .model
                 .as_deref()

@@ -3,6 +3,7 @@ import FoundationModels
 import Speech
 import AVFoundation
 import CoreMedia
+import NaturalLanguage
 
 private final class Box<T>: @unchecked Sendable {
     var value: T
@@ -320,4 +321,35 @@ public func speechTranscribe(
     }
     output.pointee = strdup(text)
     return ok
+}
+
+@_cdecl("tf_language_detect")
+public func languageDetect(
+    _ text: UnsafePointer<CChar>,
+    _ candidates: UnsafePointer<CChar>,
+    _ output: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+) -> Bool {
+    let recognizer = NLLanguageRecognizer()
+    let constraints = String(cString: candidates).split(separator: ",").map { NLLanguage(String($0)) }
+    if !constraints.isEmpty {
+        recognizer.languageConstraints = constraints
+    }
+    recognizer.processString(String(cString: text))
+    guard let language = recognizer.dominantLanguage, language != .undetermined else {
+        return false
+    }
+    output.pointee = strdup(language.rawValue)
+    return true
+}
+
+@_cdecl("tf_language_name")
+public func languageName(
+    _ code: UnsafePointer<CChar>,
+    _ output: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>
+) -> Bool {
+    guard let name = Locale(identifier: "en").localizedString(forLanguageCode: String(cString: code)) else {
+        return false
+    }
+    output.pointee = strdup(name)
+    return true
 }

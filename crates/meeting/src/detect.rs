@@ -50,9 +50,18 @@ pub fn display_name(bundle: &str) -> String {
 
 // TODO: poll-intervall refac. wenn viel cpu -> auf einen listener umstellen.
 pub fn running_input_apps() -> Vec<DetectedApp> {
+    running_apps(coreaudio::process_running_input)
+}
+
+/// apps mit mikrofon oder lautsprecher: wer stummgeschaltet nur zuhört, ist noch im anruf.
+pub fn running_audio_apps() -> Vec<DetectedApp> {
+    running_apps(|object| coreaudio::process_running_input(object) || coreaudio::process_running_output(object))
+}
+
+fn running_apps(active: impl Fn(u32) -> bool) -> Vec<DetectedApp> {
     coreaudio::process_list()
         .into_iter()
-        .filter(|object| coreaudio::process_running_input(*object))
+        .filter(|object| active(*object))
         .filter_map(|object| {
             let bundle_id = coreaudio::process_bundle(object)?;
             let pid = coreaudio::process_pid(object)?;

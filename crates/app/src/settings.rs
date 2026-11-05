@@ -3242,7 +3242,8 @@ fn run_mode_test(delegate: Delegate, editor: &ModeEditor, rx: &TestRx) {
                 let mut refiner = tf_llm::build(spec).map_err(|e| e.to_string())?;
                 let vocabulary =
                     if mode.use_vocabulary { config.vocabulary.terms_text() } else { Vec::new() };
-                let system = tf_core::prompt::system_prompt(&mode, &vocabulary);
+                let language = tf_core::language::name(&input);
+                let system = tf_core::prompt::system_prompt(&mode, &vocabulary, language.as_deref());
                 let user = tf_core::prompt::user_prompt(&input);
                 let refine = mode.refine().expect("checked above");
                 let timeout = Duration::from_millis(u64::from(refine.timeout_ms.max(1000)));
@@ -3256,7 +3257,11 @@ fn run_mode_test(delegate: Delegate, editor: &ModeEditor, rx: &TestRx) {
                 let started = Instant::now();
                 let output = refiner.refine(&request).map_err(|e| e.reason())?;
                 let ms = started.elapsed().as_millis() as u64;
-                Ok((tf_core::prompt::clean_output(&output, &input), ms))
+                let cleaned = tf_core::prompt::clean_output(&output, &input);
+                if tf_core::language::drifted(&input, &cleaned) {
+                    return Err(format!("The model switched language, so the transcript is kept: {cleaned}"));
+                }
+                Ok((cleaned, ms))
             })();
             if let Err(e) = result.as_ref() {
                 tf_core::log_error!("mode test: {e}");

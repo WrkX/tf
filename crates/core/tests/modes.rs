@@ -24,7 +24,7 @@ fn backend() -> Option<Box<dyn Refiner>> {
 }
 
 fn clean(mode: &Mode, input: &str, backend: &mut dyn Refiner) -> Result<String, String> {
-    let system = prompt::system_prompt(mode, &[]);
+    let system = prompt::system_prompt(mode, &[], tf_core::language::name(input).as_deref());
     let user = prompt::user_prompt(input);
     let request = Request::new(&system, &user, 0.2, prompt::max_tokens(input), Duration::from_secs(30));
     let output = backend.refine(&request).map_err(|e| e.reason())?;

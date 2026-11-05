@@ -201,11 +201,12 @@ impl Pill {
         let (r, g, b) = parse_hex(color).unwrap_or((0.31, 0.55, 1.0));
         let solid = NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 1.0).CGColor();
         let clear = NSColor::colorWithSRGBRed_green_blue_alpha(r, g, b, 0.0).CGColor();
-        let colors = [&*clear, &*clear, &*solid, &*clear].map(|c| {
+        let colors = [&*clear, &*solid, &*clear, &*clear].map(|c| {
             // SAFETY: cgcolor ist toll-free bridged zu einem objective-c-objekt.
             unsafe { &*(c as *const _ as *const objc2::runtime::AnyObject) }
         });
-        let locations = NSArray::from_retained_slice(&[0.0, 0.45, 0.95, 1.0].map(|v| NSNumber::new_f64(v)));
+        // der kopf läuft vorne; hinter ihm fällt die helligkeit ab.
+        let locations = NSArray::from_retained_slice(&[0.0, 0.05, 0.55, 1.0].map(|v| NSNumber::new_f64(v)));
         // SAFETY: das array enthält cgcolor-objekte, wie cagradientlayer erwartet.
         unsafe { self.glow.setColors(Some(&NSArray::from_slice(&colors))) };
         self.glow.setLocations(Some(&locations));

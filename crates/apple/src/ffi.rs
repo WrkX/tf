@@ -31,6 +31,8 @@ unsafe extern "C" {
         vocabulary: *const c_char,
         output: *mut *mut c_char,
     ) -> bool;
+    pub fn tf_language_detect(text: *const c_char, candidates: *const c_char, output: *mut *mut c_char) -> bool;
+    pub fn tf_language_name(code: *const c_char, output: *mut *mut c_char) -> bool;
 }
 
 /// übernimmt den besitz eines von swift allokierten strings.

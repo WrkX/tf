@@ -12,7 +12,7 @@ use objc2_core_audio::{
     kAudioHardwarePropertyProcessObjectList, kAudioHardwarePropertyTranslatePIDToProcessObject,
     kAudioObjectPropertyElementMain, kAudioObjectPropertyScopeGlobal, kAudioObjectPropertyScopeInput,
     kAudioObjectSystemObject, kAudioProcessPropertyBundleID, kAudioProcessPropertyIsRunningInput,
-    kAudioProcessPropertyPID, kAudioTapPropertyFormat,
+    kAudioProcessPropertyIsRunningOutput, kAudioProcessPropertyPID, kAudioTapPropertyFormat,
 };
 use objc2_foundation::NSString;
 
@@ -155,6 +155,12 @@ pub fn process_bundle(object: AudioObjectID) -> Option<String> {
 
 pub fn process_running_input(object: AudioObjectID) -> bool {
     property::<u32>(object, kAudioProcessPropertyIsRunningInput, kAudioObjectPropertyScopeGlobal)
+        .map(|value| value != 0)
+        .unwrap_or(false)
+}
+
+pub fn process_running_output(object: AudioObjectID) -> bool {
+    property::<u32>(object, kAudioProcessPropertyIsRunningOutput, kAudioObjectPropertyScopeGlobal)
         .map(|value| value != 0)
         .unwrap_or(false)
 }

@@ -1349,6 +1349,7 @@ dependencies = [
  "regex-lite",
  "serde",
  "serde_json",
+ "tf-apple",
  "tf-audio",
  "tf-diarize",
  "tf-llm",

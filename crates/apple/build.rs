@@ -25,4 +25,5 @@ fn main() {
     println!("cargo:rustc-link-lib=framework=FoundationModels");
     println!("cargo:rustc-link-lib=framework=Speech");
     println!("cargo:rustc-link-lib=framework=AVFoundation");
+    println!("cargo:rustc-link-lib=framework=NaturalLanguage");
 }

@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::{Command, ExitCode};
+use std::process::{Command, ExitCode, Stdio};
 use std::{env, fs};
 
 mod fixture;
@@ -7,6 +7,14 @@ mod fixture;
 const APP: &str = "tf";
 const SIZE_LIMIT: u64 = 10 * 1024 * 1024;
 const MODEL_ID: &str = "parakeet-tdt-0.6b-v3";
+const ICON: &str = "icon/tf-default-1024.png";
+const ICON_SIZE: u32 = 1024;
+
+/// eine repräsentation pro kantenlänge; macOS skaliert die übrigen größen selbst.
+/// nur tags, die auch `iconutil` schreibt: `icp4`/`icp5` (16/32 px) deutet iconservices
+/// in manchen kontexten als rohe RLE-daten und rendert sie als farbrauschen.
+const ICON_SIZES: [(&[u8; 4], u32); 6] =
+    [(b"ic11", 32), (b"ic12", 64), (b"ic07", 128), (b"ic08", 256), (b"ic09", 512), (b"ic10", 1024)];
 
 struct CatalogSpec {
     id: &'static str,
@@ -93,9 +101,111 @@ fn bundle() -> Result<PathBuf> {
     fs::write(contents.join("Info.plist"), plist).map_err(|e| e.to_string())?;
     fs::copy(root.join("target/release").join(APP), contents.join("MacOS").join(APP))
         .map_err(|e| e.to_string())?;
+    write_icon(&contents.join("Resources"))?;
 
     sign(&app)?;
     Ok(app)
+}
+
+/// erzeugt `Resources/AppIcon.icns` aus dem quell-png im `icon`-ordner.
+///
+/// die quellen sind 16-bit; wir reduzieren sie auf 8 bit und lassen `pngcrush` die
+/// pngs verlustfrei nachkomprimieren. das `.icns` schreiben wir selbst, weil
+/// `iconutil` die bilder beim einbetten wieder aufbläht und größen doppelt ablegt.
+fn write_icon(resources: &Path) -> Result {
+    let root = workspace_root();
+    let source = root.join(ICON);
+    if !source.is_file() {
+        return Err(format!("{} is missing", source.display()));
+    }
+    fs::create_dir_all(resources).map_err(|e| e.to_string())?;
+
+    let work = env::temp_dir().join(format!("tf-icon-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&work);
+    fs::create_dir_all(&work).map_err(|e| e.to_string())?;
+    let result = build_icns(resources, &source, &work);
+    let _ = fs::remove_dir_all(&work);
+    result
+}
+
+fn build_icns(resources: &Path, source: &Path, work: &Path) -> Result {
+    let pngcrush = find_pngcrush();
+    if pngcrush.is_none() {
+        eprintln!("note: pngcrush not found, app icon is only minimally compressed");
+    }
+
+    // sips liefert beim skalieren 8 bit ohne dither-rauschen; `pngcrush -bit_depth 8`
+    // würde dithern und die pngs dadurch stark aufblähen. bei gleicher größe kopiert
+    // sips nur, deshalb einmal auf 1025 px hoch und wieder auf 1024 px zurück.
+    let master = work.join("master.png");
+    let master = if bit_depth(source).map(|depth| depth > 8).unwrap_or(true) {
+        let big = work.join("master-2x.png");
+        sips_resize(source, &big, ICON_SIZE + 1)?;
+        sips_resize(&big, &master, ICON_SIZE)?;
+        master
+    } else {
+        source.to_path_buf()
+    };
+
+    let mut body = Vec::new();
+    for (tag, size) in ICON_SIZES {
+        let part = work.join(format!("{size}.png"));
+        sips_resize(&master, &part, size)?;
+        let path = match &pngcrush {
+            Some(tool) => {
+                let crushed = work.join(format!("{size}-crushed.png"));
+                match crush(tool, &part, &crushed) {
+                    Ok(()) => crushed,
+                    Err(e) => {
+                        eprintln!("warning: {e}");
+                        part
+                    }
+                }
+            }
+            None => part,
+        };
+
+        let data = fs::read(&path).map_err(|e| e.to_string())?;
+        let length = u32::try_from(data.len() + 8).map_err(|_| format!("{tag:?} is too large"))?;
+        body.extend_from_slice(tag);
+        body.extend_from_slice(&length.to_be_bytes());
+        body.extend_from_slice(&data);
+    }
+
+    let total = u32::try_from(body.len() + 8).map_err(|_| "icon is too large".to_string())?;
+    let mut icns = Vec::with_capacity(total as usize);
+    icns.extend_from_slice(b"icns");
+    icns.extend_from_slice(&total.to_be_bytes());
+    icns.extend_from_slice(&body);
+    fs::write(resources.join("AppIcon.icns"), icns).map_err(|e| e.to_string())
+}
+
+fn find_pngcrush() -> Option<PathBuf> {
+    let output = Command::new("xcrun").args(["--find", "pngcrush"]).output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    path.is_file().then_some(path)
+}
+
+fn crush(tool: &Path, input: &Path, output: &Path) -> Result {
+    cmd(Command::new(tool).args(["-q", "-reduce"]).arg(input).arg(output).stdout(Stdio::null()))
+}
+
+fn sips_resize(input: &Path, output: &Path, size: u32) -> Result {
+    cmd(Command::new("sips")
+        .args(["-z", &size.to_string(), &size.to_string(), "--out"])
+        .arg(output)
+        .arg(input)
+        .stdout(Stdio::null()))
+}
+
+fn bit_depth(path: &Path) -> Option<u32> {
+    let output = Command::new("sips").args(["-g", "bitsPerSample"]).arg(path).output().ok()?;
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("bitsPerSample:")?.trim().parse().ok())
 }
 
 /// signiert mit einer stabilen identität, damit macos die datenschutz-freigaben über builds hinweg behält.
