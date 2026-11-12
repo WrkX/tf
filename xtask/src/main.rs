@@ -5,6 +5,7 @@ use std::{env, fs};
 mod fixture;
 
 const APP: &str = "tf";
+const VERSION_FILE: &str = "VERSION";
 const SIZE_LIMIT: u64 = 10 * 1024 * 1024;
 const MODEL_ID: &str = "parakeet-tdt-0.6b-v3";
 const ICON: &str = "icon/tf-default-1024.png";
@@ -76,7 +77,8 @@ fn main() -> ExitCode {
         Some("fetch-model") => fetch_model(),
         Some("catalog") => catalog(),
         Some("diarize-fixture") => fixture::run(env::args().nth(2)),
-        _ => Err("usage: cargo xtask <bundle|run|fetch-model|catalog|diarize-fixture>".into()),
+        Some("version") => version().map(|v| println!("{v}")),
+        _ => Err("usage: cargo xtask <bundle|run|fetch-model|catalog|diarize-fixture|version>".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -85,6 +87,18 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// die app-version steht in `VERSION` im workspace-root; sie ist die quelle für
+/// `Info.plist` und für den release-tag.
+fn version() -> Result<String> {
+    let path = workspace_root().join(VERSION_FILE);
+    let text = fs::read_to_string(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+    let version = text.trim();
+    if version.is_empty() {
+        return Err(format!("{} is empty", path.display()));
+    }
+    Ok(version.to_owned())
 }
 
 fn bundle() -> Result<PathBuf> {
@@ -97,7 +111,7 @@ fn bundle() -> Result<PathBuf> {
     fs::create_dir_all(contents.join("MacOS")).map_err(|e| e.to_string())?;
 
     let plist = fs::read_to_string(root.join("resources/Info.plist")).map_err(|e| e.to_string())?;
-    let plist = plist.replace("$VERSION", env!("CARGO_PKG_VERSION"));
+    let plist = plist.replace("$VERSION", &version()?);
     fs::write(contents.join("Info.plist"), plist).map_err(|e| e.to_string())?;
     fs::copy(root.join("target/release").join(APP), contents.join("MacOS").join(APP))
         .map_err(|e| e.to_string())?;

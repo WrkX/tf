@@ -24,6 +24,7 @@ objc2-app-kit.workspace = true
 objc2-av-foundation.workspace = true
 objc2-avf-audio = { workspace = true, features = ["AVAudioPlayer"] }
 objc2-core-foundation.workspace = true
+objc2-core-audio.workspace = true
 objc2-core-graphics.workspace = true
 objc2-quartz-core = { workspace = true, features = ["objc2-core-graphics", "objc2-core-foundation"] }
 objc2-service-management = "0.3.2"

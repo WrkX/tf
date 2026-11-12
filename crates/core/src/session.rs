@@ -1425,16 +1425,24 @@ fn refine(
         Ok(refiner) => refiner,
         Err(e) => return (text.to_owned(), None, None, Some(e)),
     };
-    let vocabulary = if mode.use_vocabulary { config.vocabulary.terms_text() } else { Vec::new() };
-    let language = crate::language::name(text);
-    let system = prompt::system_prompt(mode, &vocabulary, language.as_deref());
-    let user = prompt::user_prompt(text);
+    let (system, user, temperature) =
+        if refine.backend.is_local() && prompt::is_s1_mini(refine.model.as_deref()) {
+            (prompt::S1_MINI_SYSTEM.to_owned(), prompt::s1_mini_user_prompt(mode, text), 0.0)
+        } else {
+            let vocabulary = if mode.use_vocabulary { config.vocabulary.terms_text() } else { Vec::new() };
+            let language = crate::language::name(text);
+            (
+                prompt::system_prompt(mode, &vocabulary, language.as_deref()),
+                prompt::user_prompt(text),
+                refine.temperature,
+            )
+        };
     let timeout = Duration::from_millis(u64::from(if refine.timeout_ms == 0 {
         DEFAULT_TIMEOUT_MS
     } else {
         refine.timeout_ms
     }));
-    let request = LlmRequest::new(&system, &user, refine.temperature, prompt::max_tokens(text), timeout);
+    let request = LlmRequest::new(&system, &user, temperature, prompt::max_tokens(text), timeout);
     let started = Instant::now();
     let result = refiner.refine(&request);
     let elapsed = started.elapsed().as_millis() as u64;

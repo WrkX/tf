@@ -236,7 +236,7 @@ impl Shell {
 
         let sidebar_view = NSView::new(mtm);
         sidebar_view.addSubview(&sidebar);
-        let version = ui::label(mtm, &format!("tf {}", env!("CARGO_PKG_VERSION")));
+        let version = ui::label(mtm, &format!("tf {}", env!("TF_VERSION")));
         version.setFont(Some(&NSFont::systemFontOfSize(11.0)));
         version.setTextColor(Some(&NSColor::tertiaryLabelColor()));
         sidebar_view.addSubview(&version);

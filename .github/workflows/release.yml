@@ -1,0 +1,58 @@
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Read version
+        id: version
+        run: echo "version=$(cargo xtask version)" >> "$GITHUB_OUTPUT"
+
+      - name: Check for existing release
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "released=true" >> "$GITHUB_OUTPUT"
+            echo "v${{ steps.version.outputs.version }} is already released, nothing to do"
+          else
+            echo "released=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build app bundle
+        if: steps.check.outputs.released == 'false'
+        run: cargo xtask bundle
+
+      - name: Package
+        if: steps.check.outputs.released == 'false'
+        run: ditto -c -k --keepParent dist/tf.app "dist/tf-v${{ steps.version.outputs.version }}.zip"
+
+      - name: Tag and publish release
+        if: steps.check.outputs.released == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v${{ steps.version.outputs.version }}" \
+            "dist/tf-v${{ steps.version.outputs.version }}.zip" \
+            --target "$GITHUB_SHA" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --generate-notes

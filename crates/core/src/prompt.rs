@@ -29,6 +29,34 @@ pub fn user_prompt(text: &str) -> String {
     format!("<transcript>\n{}\n</transcript>", text.trim())
 }
 
+/// katalog-id des spezialisierten normalisierers. s1-mini folgt keinen allgemeinen anweisungen,
+/// sondern erwartet den genauen system-prompt und die control-line aus seinem modell-kartentext.
+pub const S1_MINI_ID: &str = "s1-mini-q4";
+
+pub const S1_MINI_SYSTEM: &str = "You are a text normalizer for speech-to-text transcripts. The input begins \
+with a control line specifying the styling, structure, and context settings; clean the transcript to match \
+those settings and output only the cleaned text.";
+
+pub fn is_s1_mini(model: Option<&str>) -> bool {
+    model == Some(S1_MINI_ID)
+}
+
+/// baut den user-teil exakt so, wie s1-mini ihn beim training gesehen hat.
+pub fn s1_mini_user_prompt(mode: &Mode, text: &str) -> String {
+    let (styling, structure, context) = s1_mini_controls(mode);
+    format!("[Styling: {styling}] [Structure: {structure}] [Context: {context}]\n{}", text.trim())
+}
+
+/// die drei achsen, die s1-mini steuert. die preset-modi geben die passende kombination vor.
+fn s1_mini_controls(mode: &Mode) -> (&'static str, &'static str, &'static str) {
+    match mode.id.as_str() {
+        "message" => ("semi-casual", "prose", "general"),
+        "email" => ("semi-formal", "prose", "email"),
+        "notes" => ("semi-formal", "lists", "general"),
+        _ => ("semi-formal", "prose", "general"),
+    }
+}
+
 // TODO: echten tokenizer nehmen
 /// `max(256, 2 * eingabe-tokens)`, tokens mit vier zeichen geschätzt.
 pub fn max_tokens(input: &str) -> u32 {
@@ -131,6 +159,37 @@ mod tests {
     #[test]
     fn transcript_is_wrapped_as_data() {
         assert_eq!(user_prompt("  hello  "), "<transcript>\nhello\n</transcript>");
+    }
+
+    #[test]
+    fn s1_mini_uses_its_training_format() {
+        let mode = preset("clean").unwrap();
+        assert_eq!(
+            S1_MINI_SYSTEM,
+            concat!(
+                "You are a text normalizer for speech-to-text transcripts. The input begins with a control line ",
+                "specifying the styling, structure, and context settings; clean the transcript to match those ",
+                "settings and output only the cleaned text."
+            )
+        );
+        assert_eq!(
+            s1_mini_user_prompt(&mode, "  so um send it  "),
+            "[Styling: semi-formal] [Structure: prose] [Context: general]\nso um send it"
+        );
+        assert!(is_s1_mini(Some(S1_MINI_ID)));
+        assert!(!is_s1_mini(Some("qwen3-1.7b-q4")));
+        assert!(!is_s1_mini(None));
+    }
+
+    #[test]
+    fn s1_mini_controls_follow_the_mode() {
+        let controls = |id| {
+            let mode = preset(id).unwrap();
+            s1_mini_user_prompt(&mode, "text")
+        };
+        assert!(controls("message").starts_with("[Styling: semi-casual]"));
+        assert!(controls("email").ends_with("[Context: email]\ntext"));
+        assert!(controls("notes").contains("[Structure: lists]"));
     }
 
     #[test]

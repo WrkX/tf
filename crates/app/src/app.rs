@@ -31,7 +31,7 @@ use objc2_foundation::{
     NSUserNotification, NSUserNotificationAction, NSUserNotificationActivationType, NSUserNotificationCenter,
     NSUserNotificationCenterDelegate,
 };
-use tf_core::config::{Config, SoundStyle};
+use tf_core::config::{Config, PlaybackBehavior, SoundStyle};
 use tf_core::mode::{ModeId, RAW_ID};
 use tf_core::paths::{audio_dir, config_path, history_path, model_dir, models_dir, support_dir};
 use tf_core::trigger::{HotkeyEvent, Machine};
@@ -45,6 +45,8 @@ use crate::history::History;
 use crate::hotkey;
 use crate::insert::{self, Outcome};
 use crate::live::LiveTranscript;
+use crate::media;
+use crate::media::Playback;
 use crate::pill::{Animation, Pill};
 use crate::settings::Settings;
 use crate::shell::Page;
@@ -163,6 +165,8 @@ pub struct State {
     mode_menu: OnceCell<Retained<NSMenu>>,
     mode_list: RefCell<Vec<ModeId>>,
     player: RefCell<Option<Retained<AVAudioPlayer>>>,
+    playback: RefCell<Option<Playback>>,
+    playback_paused: RefCell<Option<Retained<AVAudioPlayer>>>,
     model_download: RefCell<Option<(tf_models::Download, Receiver<ModelProgress>)>>,
     speech_install: RefCell<Option<Receiver<SpeechInstallMsg>>>,
     download_state: RefCell<Option<DownloadView>>,
@@ -194,6 +198,7 @@ define_class!(
 
         #[unsafe(method(applicationWillTerminate:))]
         fn will_terminate(&self, _notification: &NSNotification) {
+            self.restore_media();
             if let Some(core) = self.ivars().core.get() {
                 core.stop_meeting();
                 core.cancel();
@@ -374,6 +379,8 @@ impl AppDelegate {
             mode_menu: OnceCell::new(),
             mode_list: RefCell::new(Vec::new()),
             player: RefCell::new(None),
+            playback: RefCell::new(None),
+            playback_paused: RefCell::new(None),
             model_download: RefCell::new(None),
             speech_install: RefCell::new(None),
             download_state: RefCell::new(None),
@@ -1529,7 +1536,7 @@ impl AppDelegate {
                 .map(|state| state.id.clone());
             if let Some(id) = installed_id
                 && let Ok(catalog) = Catalog::embedded()
-                && catalog.find(&id).is_some_and(|entry| entry.kind == "llm")
+                && catalog.find(&id).is_some_and(|entry| entry.is_language_model())
                 && tf_models::scan_runtimes(&support_dir()).is_empty()
             {
                 self.start_model_download("llama.cpp-b11669");
@@ -1870,7 +1877,38 @@ impl AppDelegate {
         }
     }
 
+    fn start_media(&self) {
+        let (behavior, duck_percent) = {
+            let config = self.ivars().config.borrow();
+            (config.audio.playback, config.audio.duck_percent)
+        };
+        // eine laufende meeting-aufnahme soll nicht selbst pausiert werden.
+        if behavior == PlaybackBehavior::Off || self.ivars().meeting_id.get().is_some() {
+            return;
+        }
+        if behavior == PlaybackBehavior::Pause
+            && let Some(player) = self.ivars().player.borrow().as_ref()
+            && unsafe { player.isPlaying() }
+        {
+            unsafe { player.pause() };
+            *self.ivars().playback_paused.borrow_mut() = Some(player.clone());
+        }
+        *self.ivars().playback.borrow_mut() = media::begin(behavior, duck_percent);
+    }
+
+    fn restore_media(&self) {
+        self.ivars().playback.borrow_mut().take();
+        let paused = self.ivars().playback_paused.borrow_mut().take();
+        if let Some(paused) = paused
+            && let Some(player) = self.ivars().player.borrow().as_ref()
+            && std::ptr::eq(Retained::as_ptr(player), Retained::as_ptr(&paused))
+        {
+            let _ = unsafe { paused.play() };
+        }
+    }
+
     fn begin_recording(&self) {
+        self.start_media();
         self.ivars().pill_shown.set(false);
         self.ivars().anim_start.set(Instant::now());
         self.ivars().show_at.set(Some(Instant::now() + PILL_DELAY));
@@ -1892,6 +1930,7 @@ impl AppDelegate {
     }
 
     fn begin_processing(&self) {
+        self.restore_media();
         let was_shown = self.ivars().pill_shown.get();
         *self.ivars().phase.borrow_mut() = Phase::Processing;
         if !was_shown {
@@ -1925,6 +1964,7 @@ impl AppDelegate {
     }
 
     fn cancel_take(&self, empty: bool) {
+        self.restore_media();
         *self.ivars().active_trigger.borrow_mut() = None;
         self.ivars().intercept_esc.store(false, Ordering::Relaxed);
         self.set_toggle_title("Start Dictation");
@@ -1946,6 +1986,7 @@ impl AppDelegate {
     }
 
     fn fail(&self, failure: Failure) {
+        self.restore_media();
         tf_core::log_error!("{}", failure.message());
         *self.ivars().active_trigger.borrow_mut() = None;
         self.ivars().trigger.borrow_mut().reset();

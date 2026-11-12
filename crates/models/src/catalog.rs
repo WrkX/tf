@@ -69,6 +69,15 @@ impl CatalogEntry {
         self.kind == "runtime"
     }
 
+    /// modelle, die der llm-schritt nutzen kann: allgemeine instruktions-modelle und spezialisierte normalisierer.
+    pub fn is_language_model(&self) -> bool {
+        matches!(self.kind.as_str(), "llm" | "normalizer")
+    }
+
+    pub fn is_normalizer(&self) -> bool {
+        self.kind == "normalizer"
+    }
+
     pub fn language_label(&self) -> String {
         match self.languages.len() {
             0 => "—".to_owned(),
@@ -96,11 +105,18 @@ mod tests {
         assert!(catalog.find("llama.cpp-b11669").is_some());
         assert!(catalog.find("qwen3-1.7b-q4").is_some());
         assert!(catalog.find("qwen3-4b-instruct-q4").is_some());
+        assert!(catalog.find("s1-mini-q4").is_some_and(|model| model.is_normalizer()));
+        assert!(catalog.find("s1-mini-q4").is_some_and(|model| model.is_language_model()));
+        assert!(catalog.find("qwen3-1.7b-q4").is_some_and(|model| model.is_language_model()));
+        assert!(catalog.find("speaker-diarization").is_some_and(|model| !model.is_language_model()));
         assert!(catalog.find("speaker-diarization").is_some());
         for model in &catalog.models {
             assert!(!model.files.is_empty());
             assert!(model.files.iter().all(|f| f.sha256.len() == 64));
         }
+        let s1 = catalog.find("s1-mini-q4").unwrap();
+        assert_eq!(s1.total_bytes(), 484_219_808);
+        assert_eq!(s1.source.repo, "superwhisper/s1-mini-GGUF");
     }
 
     #[test]

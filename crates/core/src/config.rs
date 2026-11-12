@@ -66,6 +66,21 @@ pub struct AudioConfig {
     /// wiedergabelautstärke der effekte, `0.0..=1.0`.
     pub sound_volume: f32,
     pub max_recording_secs: u32,
+    /// was während einer aufnahme mit anderer wiedergabe passiert.
+    pub playback: PlaybackBehavior,
+    /// senkt die ausgabelautstärke während der aufnahme um diesen prozentsatz, `0..=100`.
+    pub duck_percent: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub enum PlaybackBehavior {
+    #[default]
+    Off,
+    /// pausiert fremde wiedergabe und setzt sie nach der aufnahme fort.
+    Pause,
+    /// lässt sie laufen und senkt die systemlautstärke.
+    Duck,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -241,6 +256,8 @@ impl Default for AudioConfig {
             sound_style: SoundStyle::default(),
             sound_volume: 0.25,
             max_recording_secs: 600,
+            playback: PlaybackBehavior::default(),
+            duck_percent: 80,
         }
     }
 }
@@ -399,6 +416,8 @@ mod tests {
         assert!(!loaded.meetings.identify_speakers);
         assert_eq!(loaded.meetings.max_speakers, 8);
         assert!((loaded.meetings.speaker_threshold - 0.70).abs() < f32::EPSILON);
+        assert_eq!(loaded.audio.playback, PlaybackBehavior::Off);
+        assert_eq!(loaded.audio.duck_percent, 80);
         fs::remove_dir_all(dir).unwrap();
     }
 

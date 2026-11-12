@@ -1,4 +1,3 @@
-
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::ptr::NonNull;
@@ -12,16 +11,16 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{
     NSAlert, NSAlertFirstButtonReturn, NSAlertSecondButtonReturn, NSButton, NSColor, NSColorSpace,
-    NSColorWell, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSFont, NSImageView,
-    NSLayoutConstraint, NSLayoutConstraintOrientation, NSLineBreakMode, NSModalResponseOK, NSOpenPanel,
-    NSPopUpButton, NSProgressIndicator, NSScrollView, NSSlider, NSStackView, NSSwitch, NSTextAlignment,
-    NSTextField, NSTextView, NSView, NSWindow, NSWorkspace,
+    NSColorWell, NSControlSize, NSControlStateValueOff, NSControlStateValueOn, NSEvent, NSEventModifierFlags,
+    NSFont, NSImageView, NSLayoutConstraint, NSLayoutConstraintOrientation, NSLayoutPriorityDefaultLow,
+    NSLineBreakMode, NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSProgressIndicator, NSScrollView,
+    NSSlider, NSStackView, NSSwitch, NSTextAlignment, NSTextField, NSTextView, NSView, NSWindow, NSWorkspace,
 };
 use objc2_foundation::{NSArray, NSBundle, NSString, NSTimer};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
 use tf_apple::speech::SpeechLocale;
-use tf_core::config::{CaptureMode, Config, HistoryLevel, InsertionMethod, SoundStyle};
+use tf_core::config::{CaptureMode, Config, HistoryLevel, InsertionMethod, PlaybackBehavior, SoundStyle};
 use tf_core::mode::{self, Backend, Mode, ModeId, Refine};
 use tf_core::paths::{history_path, models_dir, support_dir};
 use tf_core::text::{Replacement, ReplacementKind, Term, validate_replacement};
@@ -148,9 +147,7 @@ pub struct Settings {
     mode_editor: Rc<ModeEditor>,
     modes_signature: RefCell<String>,
     test_rx: TestRx,
-    vocab_terms: Retained<NSTextView>,
-    vocab_replacements: Retained<NSTextView>,
-    vocab_status: Retained<NSTextField>,
+    vocab_editor: Rc<VocabularyEditor>,
     history_store: Retained<NSPopUpButton>,
     history_text: Retained<NSPopUpButton>,
     history_audio: Retained<NSPopUpButton>,
@@ -204,11 +201,17 @@ struct ModesPage {
     editor: Rc<ModeEditor>,
 }
 
+struct VocabularyEditor {
+    word: Retained<NSTextField>,
+    replacement: Retained<NSTextField>,
+    status: Retained<NSTextField>,
+    list: Retained<NSStackView>,
+    _actions: RefCell<Vec<Action>>,
+}
+
 struct VocabularyPage {
     view: Retained<objc2_app_kit::NSScrollView>,
-    terms: Retained<NSTextView>,
-    replacements: Retained<NSTextView>,
-    status: Retained<NSTextField>,
+    editor: Rc<VocabularyEditor>,
 }
 
 struct StoragePage {
@@ -371,9 +374,7 @@ impl Settings {
             mode_editor: modes.editor,
             modes_signature: RefCell::new(String::new()),
             test_rx,
-            vocab_terms: vocabulary.terms,
-            vocab_replacements: vocabulary.replacements,
-            vocab_status: vocabulary.status,
+            vocab_editor: vocabulary.editor,
             history_store: storage.store,
             history_text: storage.text,
             history_audio: storage.audio,
@@ -480,7 +481,7 @@ impl Settings {
         let signature = serde_json::to_string(&config.modes()).unwrap_or_default()
             + &config.default_mode_id
             + &config.engine.default
-            + &llm_options().iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>().join(",");
+            + &llm_options(true).iter().map(|(_, id)| id.as_str()).collect::<Vec<_>>().join(",");
         if *self.modes_signature.borrow() == signature {
             return;
         }
@@ -498,31 +499,9 @@ impl Settings {
     }
 
     fn load_vocabulary(&self) {
-        let config = self.delegate.get().config();
-        let terms = config
-            .vocabulary
-            .terms
-            .iter()
-            .map(|term| if term.exact { format!("={}", term.text) } else { term.text.clone() })
-            .collect::<Vec<_>>()
-            .join("\n");
-        set_text(&self.vocab_terms, &terms);
-        let replacements = config
-            .vocabulary
-            .replacements
-            .iter()
-            .map(|replacement| {
-                let from = if replacement.kind == ReplacementKind::Regex {
-                    format!("/{}/", replacement.from)
-                } else {
-                    replacement.from.clone()
-                };
-                format!("{from} => {}", replacement.to.replace('\n', "\\n"))
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        set_text(&self.vocab_replacements, &replacements);
-        self.vocab_status.setStringValue(&NSString::from_str(""));
+        let mtm = MainThreadMarker::new().expect("settings runs on the main thread");
+        self.vocab_editor.status.setStringValue(&NSString::from_str(""));
+        rebuild_vocabulary(mtm, self.delegate, &self.vocab_editor);
     }
 
     fn poll_test(&self) {
@@ -1314,6 +1293,68 @@ fn audio_page(
             Retained::into_super(Retained::into_super(view))
         })
         .collect();
+    let duck_value = ui::value_label(mtm, &format!("{}%", config.audio.duck_percent));
+    ui::sized(&duck_value, Some(44.0), None);
+    let duck_label = duck_value.clone();
+    let action = Action::new(mtm, move |sender: &AnyObject| {
+        if let Some(slider) = sender.downcast_ref::<NSSlider>() {
+            let percent = slider.doubleValue().round().clamp(0.0, 100.0) as u32;
+            duck_label.setStringValue(&NSString::from_str(&format!("{percent}%")));
+            delegate.get().update_config(|config| config.audio.duck_percent = percent);
+        }
+    });
+    let duck = ui::slider(mtm, 0.0..=100.0, f64::from(config.audio.duck_percent), &action);
+    keep.keep(action);
+
+    let duck_row = ui::row(
+        mtm,
+        "Lower volume by",
+        Some(
+            "Other audio gets this much quieter while recording and returns to its old volume when you stop.",
+        ),
+        &[],
+        ui::views![duck, duck_value],
+    );
+
+    let playback_index = match config.audio.playback {
+        PlaybackBehavior::Off => 0,
+        PlaybackBehavior::Pause => 1,
+        PlaybackBehavior::Duck => 2,
+    };
+    let duck_row_for_action = duck_row.clone();
+    let action = popup_changed(mtm, move |index| {
+        let playback = match index {
+            1 => PlaybackBehavior::Pause,
+            2 => PlaybackBehavior::Duck,
+            _ => PlaybackBehavior::Off,
+        };
+        duck_row_for_action.setHidden(playback != PlaybackBehavior::Duck);
+        delegate.get().update_config(|config| config.audio.playback = playback);
+    });
+    let playback =
+        ui::popup(mtm, &["Do nothing", "Pause playback", "Lower the volume"], playback_index, &action);
+    ui::sized(&playback, Some(200.0), None);
+    keep.keep(action);
+    duck_row.setHidden(config.audio.playback != PlaybackBehavior::Duck);
+
+    let other_audio = ui::section(
+        mtm,
+        Some("Other audio"),
+        &[
+            ui::row(
+                mtm,
+                "While recording",
+                Some(
+                    "Pause stops music, podcasts, and video while you dictate and resumes them when you stop. Lower the volume keeps them playing more quietly.",
+                ),
+                &[],
+                ui::views![playback],
+            ),
+            duck_row,
+        ],
+        None,
+    );
+
     let effects = ui::section(
         mtm,
         Some("Sound effects"),
@@ -1330,7 +1371,7 @@ fn audio_page(
         None,
     );
 
-    AudioPage { view: ui::form(mtm, &[input, recording, effects]), device_popup, level }
+    AudioPage { view: ui::form(mtm, &[input, recording, other_audio, effects]), device_popup, level }
 }
 
 fn permission_row(
@@ -1409,6 +1450,8 @@ fn provider_style(id: &str) -> (&'static str, Retained<NSColor>) {
         ("hare.fill", NSColor::systemOrangeColor())
     } else if id.starts_with("phi") {
         ("square.grid.2x2.fill", NSColor::systemTealColor())
+    } else if id.starts_with("s1-mini") {
+        ("text.badge.checkmark", NSColor::systemPinkColor())
     } else {
         ("shippingbox.fill", NSColor::systemBlueColor())
     }
@@ -1528,12 +1571,13 @@ fn model_row(
         star
     });
 
+    let tag = (speech || entry.is_normalizer()).then(|| entry.language_label());
     let row = library_row(
         mtm,
         default.as_deref(),
         &entry.id,
         &entry.name,
-        speech.then(|| entry.language_label()).as_deref(),
+        tag.as_deref(),
         &entry.summary,
         speech,
         ui::views![status, button],
@@ -1619,7 +1663,7 @@ fn models_page(
     );
     push("apple speech", true, false, apple_row);
 
-    for entry in catalog.models.iter().filter(|entry| entry.kind == "llm") {
+    for entry in catalog.models.iter().filter(|entry| entry.is_language_model()) {
         let (row, handles) = model_row(mtm, delegate, entry, keep);
         push(&entry.name, false, false, row);
         models.push(handles);
@@ -2059,6 +2103,9 @@ fn modes_page(mtm: MainThreadMarker, delegate: Delegate, test_rx: &TestRx, keep:
     let for_processing = Rc::clone(&editor);
     attach(popup_changed(mtm, move |_| apply_processing(&for_processing)), &processing);
 
+    let for_model = Rc::clone(&editor);
+    attach(popup_changed(mtm, move |_| refresh_model_hint(&for_model)), &editor.model_popup);
+
     let for_advanced = Rc::clone(&editor);
     attach(
         clicked(mtm, move || {
@@ -2166,62 +2213,333 @@ fn modes_page(mtm: MainThreadMarker, delegate: Delegate, test_rx: &TestRx, keep:
 }
 
 fn vocabulary_page(mtm: MainThreadMarker, delegate: Delegate, keep: &Actions) -> VocabularyPage {
-    let (terms_scroll, terms) = ui::text_area(mtm, 110.0);
-    let (replacements_scroll, replacements) = ui::text_area(mtm, 110.0);
-    let status = ui::detail(mtm, "");
+    let placeholder = Action::new(mtm, |_sender: &AnyObject| {});
 
-    let status_label = status.clone();
-    let terms_for_save = terms.clone();
-    let replacements_for_save = replacements.clone();
-    let action = clicked(mtm, move || {
-        match save_vocabulary(delegate.get(), &terms_for_save, &replacements_for_save) {
-            Ok(()) => {
-                status_label.setStringValue(&NSString::from_str("Saved."));
-                ui::set_status_color(&status_label, false);
-            }
-            Err(e) => {
-                status_label.setStringValue(&NSString::from_str(&e));
-                ui::set_status_color(&status_label, true);
+    let word = vocabulary_field(mtm, "New word or replacement");
+    let replacement = vocabulary_field(mtm, "Replace with…");
+    let add_word = ui::button(mtm, "Add word", &placeholder);
+    add_word.setToolTip(Some(&NSString::from_str("Add this word to the dictionary (Return)")));
+    let add_replacement = ui::button(mtm, "Replace", &placeholder);
+    add_replacement.setKeyEquivalent(&NSString::from_str("\r"));
+    add_replacement.setKeyEquivalentModifierMask(NSEventModifierFlags::Command);
+    add_replacement.setToolTip(Some(&NSString::from_str(
+        "Add a replacement from the word to the replacement field (⌘Return)",
+    )));
+
+    let word_return = ui::tag(mtm, "↩");
+    let word_row = ui::hstack(mtm, 8.0);
+    word_row.addArrangedSubview(&word);
+    word_row.addArrangedSubview(&add_word);
+    word_row.addArrangedSubview(&word_return);
+
+    let replacement_return = ui::tag(mtm, "⌘↩");
+    let replacement_row = ui::hstack(mtm, 8.0);
+    replacement_row.addArrangedSubview(&replacement);
+    replacement_row.addArrangedSubview(&add_replacement);
+    replacement_row.addArrangedSubview(&replacement_return);
+
+    let status = ui::detail(mtm, "");
+    let add_section = ui::section(
+        mtm,
+        Some("Dictionary"),
+        &[ui::padded(mtm, &word_row), ui::padded(mtm, &replacement_row)],
+        Some(
+            "Press Return to add a word, or ⌘Return to add a replacement. Prefix a word with = to turn off \
+             fuzzy correction, and wrap the search text in /slashes/ for a regular expression.",
+        ),
+    );
+    let add_column = ui::vstack(mtm, 6.0);
+    add_column.addArrangedSubview(&add_section);
+    ui::fill_width(&add_column, &add_section, 0.0);
+    add_column.addArrangedSubview(&status);
+    ui::fill_width(&add_column, &status, 16.0);
+
+    let list_title = ui::label(mtm, "Words and replacements");
+    list_title.setFont(Some(&NSFont::boldSystemFontOfSize(13.0)));
+    let list = ui::vstack(mtm, 8.0);
+    let list_section = ui::vstack(mtm, 8.0);
+    list_section.addArrangedSubview(&list_title);
+    list_section.addArrangedSubview(&list);
+    ui::fill_width(&list_section, &list, 0.0);
+
+    let editor =
+        Rc::new(VocabularyEditor { word, replacement, status, list, _actions: RefCell::new(Vec::new()) });
+
+    let word_action = Action::new(mtm, {
+        let editor = Rc::clone(&editor);
+        move |_sender: &AnyObject| {
+            if NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Command) {
+                add_vocabulary_replacement(mtm, delegate, &editor);
+            } else {
+                add_vocabulary_word(mtm, delegate, &editor);
             }
         }
     });
-    let save = ui::button(mtm, "Save", &action);
-    keep.keep(action);
+    word_action.attach(&editor.word);
+    keep.keep(word_action);
 
-    let sections = [
-        ui::section(
-            mtm,
-            Some("Terms"),
-            &[ui::block_row(
-                mtm,
-                "Vocabulary terms",
-                Some(
-                    "One term per line. Prefix with = for an exact-only term that is never fuzzy-corrected.",
-                ),
-                &[],
-                &terms_scroll,
-            )],
-            None,
-        ),
-        ui::section(
-            mtm,
-            Some("Replacements"),
-            &[ui::block_row(
-                mtm,
-                "Replacements",
-                None,
-                &[&ui::detail(
-                    mtm,
-                    "One per line: from => to. Wrap the left side in /slashes/ for a regular expression. \
-                     Matching is case-insensitive.",
-                )],
-                &replacements_scroll,
-            )],
-            None,
-        ),
-        ui::section(mtm, None, &[ui::row(mtm, "Save changes", None, &[&status], ui::views![save])], None),
-    ];
-    VocabularyPage { view: ui::form(mtm, &sections), terms, replacements, status }
+    let replacement_action = Action::new(mtm, {
+        let editor = Rc::clone(&editor);
+        move |_sender: &AnyObject| add_vocabulary_replacement(mtm, delegate, &editor)
+    });
+    replacement_action.attach(&editor.replacement);
+    keep.keep(replacement_action);
+
+    let add_word_action = clicked(mtm, {
+        let editor = Rc::clone(&editor);
+        move || add_vocabulary_word(mtm, delegate, &editor)
+    });
+    add_word_action.attach(&add_word);
+    keep.keep(add_word_action);
+
+    let add_replacement_action = clicked(mtm, {
+        let editor = Rc::clone(&editor);
+        move || add_vocabulary_replacement(mtm, delegate, &editor)
+    });
+    add_replacement_action.attach(&add_replacement);
+    keep.keep(add_replacement_action);
+
+    rebuild_vocabulary(mtm, delegate, &editor);
+    keep.keep(placeholder);
+    VocabularyPage {
+        view: ui::form(mtm, &[Retained::into_super(add_column), Retained::into_super(list_section)]),
+        editor,
+    }
+}
+
+fn vocabulary_field(mtm: MainThreadMarker, placeholder: &str) -> Retained<NSTextField> {
+    let field = NSTextField::textFieldWithString(&NSString::from_str(""), mtm);
+    field.setPlaceholderString(Some(&NSString::from_str(placeholder)));
+    field.setTranslatesAutoresizingMaskIntoConstraints(false);
+    field.setContentHuggingPriority_forOrientation(1.0, NSLayoutConstraintOrientation::Horizontal);
+    field.setContentCompressionResistancePriority_forOrientation(
+        1.0,
+        NSLayoutConstraintOrientation::Horizontal,
+    );
+    field.widthAnchor().constraintGreaterThanOrEqualToConstant(160.0).setActive(true);
+    field
+}
+
+fn rebuild_vocabulary(mtm: MainThreadMarker, delegate: Delegate, editor: &Rc<VocabularyEditor>) {
+    for view in editor.list.arrangedSubviews().iter() {
+        editor.list.removeArrangedSubview(&view);
+        view.removeFromSuperview();
+    }
+
+    let config = delegate.get().config();
+    let mut actions = Vec::new();
+    for (index, term) in config.vocabulary.terms.iter().enumerate() {
+        let delete = clicked(mtm, {
+            let editor = Rc::clone(editor);
+            move || delete_vocabulary_term(mtm, delegate, &editor, index)
+        });
+        let badge = term.exact.then_some("exact");
+        let row = vocabulary_row(mtm, &term.text, None, badge, &delete);
+        editor.list.addArrangedSubview(&row);
+        ui::fill_width(&editor.list, &row, 0.0);
+        actions.push(delete);
+    }
+    for (index, replacement) in config.vocabulary.replacements.iter().enumerate() {
+        let delete = clicked(mtm, {
+            let editor = Rc::clone(editor);
+            move || delete_vocabulary_replacement(mtm, delegate, &editor, index)
+        });
+        let from = if replacement.kind == ReplacementKind::Regex {
+            format!("/{}/", replacement.from)
+        } else {
+            replacement.from.clone()
+        };
+        let to =
+            if replacement.to.is_empty() { "—".to_owned() } else { replacement.to.replace('\n', "\\n") };
+        let badge = (replacement.kind == ReplacementKind::Regex).then_some("regex");
+        let row = vocabulary_row(mtm, &from, Some(&to), badge, &delete);
+        editor.list.addArrangedSubview(&row);
+        ui::fill_width(&editor.list, &row, 0.0);
+        actions.push(delete);
+    }
+    if actions.is_empty() {
+        let empty = ui::padded(mtm, &ui::detail(mtm, "No words or replacements yet."));
+        editor.list.addArrangedSubview(&empty);
+        ui::fill_width(&editor.list, &empty, 0.0);
+    }
+    *editor._actions.borrow_mut() = actions;
+}
+
+fn vocabulary_row(
+    mtm: MainThreadMarker,
+    from: &str,
+    to: Option<&str>,
+    badge: Option<&str>,
+    delete: &Action,
+) -> Retained<NSView> {
+    let content = ui::hstack(mtm, 10.0);
+    let source = ui::label(mtm, from);
+    source.setFont(Some(&NSFont::systemFontOfSize(14.0)));
+    source.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+    source.setContentCompressionResistancePriority_forOrientation(
+        NSLayoutPriorityDefaultLow,
+        NSLayoutConstraintOrientation::Horizontal,
+    );
+    content.addArrangedSubview(&source);
+    if let Some(badge) = badge {
+        content.addArrangedSubview(&ui::tag(mtm, badge));
+    }
+    if let Some(to) = to {
+        let arrow = NSImageView::new(mtm);
+        arrow.setImage(ui::symbol_image("arrow.right", "replaces with").as_deref());
+        arrow.setContentTintColor(Some(&NSColor::tertiaryLabelColor()));
+        ui::sized(&arrow, Some(14.0), Some(14.0));
+        content.addArrangedSubview(&arrow);
+        let target = ui::label(mtm, to);
+        target.setFont(Some(&NSFont::systemFontOfSize(14.0)));
+        target.setTextColor(Some(&NSColor::secondaryLabelColor()));
+        target.setLineBreakMode(NSLineBreakMode::ByTruncatingTail);
+        target.setContentCompressionResistancePriority_forOrientation(
+            NSLayoutPriorityDefaultLow,
+            NSLayoutConstraintOrientation::Horizontal,
+        );
+        content.addArrangedSubview(&target);
+    }
+    let spacer = NSView::new(mtm);
+    spacer.setContentHuggingPriority_forOrientation(1.0, NSLayoutConstraintOrientation::Horizontal);
+    spacer.setContentCompressionResistancePriority_forOrientation(
+        1.0,
+        NSLayoutConstraintOrientation::Horizontal,
+    );
+    content.addArrangedSubview(&spacer);
+    content.addArrangedSubview(&ui::symbol_button(mtm, "xmark", "Remove from dictionary", delete));
+
+    let padded = ui::padded(mtm, &content);
+    let card = ui::Surface::new(mtm, NSColor::quaternarySystemFillColor(), 10.0, false);
+    card.wrap(&padded);
+    Retained::into_super(card)
+}
+
+fn add_vocabulary_word(mtm: MainThreadMarker, delegate: Delegate, editor: &Rc<VocabularyEditor>) {
+    let value = editor.word.stringValue().to_string();
+    let value = value.trim();
+    if value.is_empty() {
+        set_vocabulary_status(editor, "Type a word first.", true);
+        return;
+    }
+    let (exact, text) = match value.strip_prefix('=') {
+        Some(text) => (true, text.trim()),
+        None => (false, value),
+    };
+    if text.is_empty() {
+        set_vocabulary_status(editor, "Type a word after =.", true);
+        return;
+    }
+
+    let config = delegate.get().config();
+    let existing = config.vocabulary.terms.iter().position(|term| term.text.eq_ignore_ascii_case(text));
+    if let Some(index) = existing {
+        if config.vocabulary.terms[index].exact == exact {
+            set_vocabulary_status(editor, &format!("\"{text}\" is already in the dictionary."), false);
+        } else {
+            delegate.get().update_config(|config| config.vocabulary.terms[index].exact = exact);
+            set_vocabulary_status(editor, &format!("Updated \"{text}\"."), false);
+        }
+    } else {
+        delegate.get().update_config(|config| {
+            config.vocabulary.terms.push(Term { text: text.to_owned(), exact });
+        });
+        set_vocabulary_status(editor, &format!("Added \"{text}\"."), false);
+    }
+    editor.word.setStringValue(&NSString::from_str(""));
+    rebuild_vocabulary(mtm, delegate, editor);
+}
+
+fn add_vocabulary_replacement(mtm: MainThreadMarker, delegate: Delegate, editor: &Rc<VocabularyEditor>) {
+    let from = editor.word.stringValue().to_string();
+    let from = from.trim();
+    if from.is_empty() {
+        // Ein Feld-Action und der ⌘Return-Key-Equivalent können beide feuern. Nach dem ersten
+        // Aufruf sind die Felder leer, der zweite soll dann still nichts tun.
+        if NSEvent::modifierFlags_class().contains(NSEventModifierFlags::Command) {
+            return;
+        }
+        set_vocabulary_status(editor, "Type the text to replace first.", true);
+        return;
+    }
+    let to = editor.replacement.stringValue().to_string();
+    let to = to.trim().replace("\\n", "\n");
+    let (kind, from) = if from.len() >= 2 && from.starts_with('/') && from.ends_with('/') {
+        (ReplacementKind::Regex, &from[1..from.len() - 1])
+    } else {
+        (ReplacementKind::Phrase, from)
+    };
+    let candidate = Replacement { from: from.to_owned(), to, kind, case_sensitive: false };
+    if let Err(error) = validate_replacement(&candidate) {
+        set_vocabulary_status(editor, &error, true);
+        return;
+    }
+
+    let config = delegate.get().config();
+    let existing = config
+        .vocabulary
+        .replacements
+        .iter()
+        .position(|replacement| replacement.kind == kind && replacement.from.eq_ignore_ascii_case(from));
+    if let Some(index) = existing {
+        delegate.get().update_config(|config| {
+            config.vocabulary.replacements[index].to = candidate.to.clone();
+        });
+        set_vocabulary_status(editor, &format!("Updated replacement for \"{from}\"."), false);
+    } else {
+        delegate.get().update_config(|config| config.vocabulary.replacements.push(candidate));
+        set_vocabulary_status(editor, &format!("Added replacement for \"{from}\"."), false);
+    }
+    editor.word.setStringValue(&NSString::from_str(""));
+    editor.replacement.setStringValue(&NSString::from_str(""));
+    rebuild_vocabulary(mtm, delegate, editor);
+}
+
+fn delete_vocabulary_term(
+    mtm: MainThreadMarker,
+    delegate: Delegate,
+    editor: &Rc<VocabularyEditor>,
+    index: usize,
+) {
+    let removed = delegate.get().config().vocabulary.terms.get(index).map(|term| term.text.clone());
+    delegate.get().update_config(|config| {
+        if index < config.vocabulary.terms.len() {
+            config.vocabulary.terms.remove(index);
+        }
+    });
+    if let Some(text) = removed {
+        set_vocabulary_status(editor, &format!("Removed \"{text}\"."), false);
+    }
+    rebuild_vocabulary(mtm, delegate, editor);
+}
+
+fn delete_vocabulary_replacement(
+    mtm: MainThreadMarker,
+    delegate: Delegate,
+    editor: &Rc<VocabularyEditor>,
+    index: usize,
+) {
+    let removed = delegate
+        .get()
+        .config()
+        .vocabulary
+        .replacements
+        .get(index)
+        .map(|replacement| replacement.from.clone());
+    delegate.get().update_config(|config| {
+        if index < config.vocabulary.replacements.len() {
+            config.vocabulary.replacements.remove(index);
+        }
+    });
+    if let Some(from) = removed {
+        set_vocabulary_status(editor, &format!("Removed replacement for \"{from}\"."), false);
+    }
+    rebuild_vocabulary(mtm, delegate, editor);
+}
+
+fn set_vocabulary_status(editor: &VocabularyEditor, message: &str, error: bool) {
+    editor.status.setStringValue(&NSString::from_str(message));
+    ui::set_status_color(&editor.status, error);
 }
 
 fn meetings_page(mtm: MainThreadMarker, delegate: Delegate, config: &Config, keep: &Actions) -> MeetingsPage {
@@ -2415,7 +2733,7 @@ fn about_page(mtm: MainThreadMarker, delegate: Delegate, keep: &Actions) -> Reta
     let name = ui::label(mtm, "tf");
     name.setFont(Some(&NSFont::boldSystemFontOfSize(28.0)));
     let tagline = ui::detail(mtm, "Local dictation and meeting transcripts for macOS.");
-    let version = ui::detail(mtm, &format!("Version {}", env!("CARGO_PKG_VERSION")));
+    let version = ui::detail(mtm, &format!("Version {}", env!("TF_VERSION")));
     let header = ui::vstack(mtm, 4.0);
     for view in ui::views![name, tagline, version] {
         header.addArrangedSubview(view);
@@ -2455,6 +2773,13 @@ fn about_page(mtm: MainThreadMarker, delegate: Delegate, keep: &Actions) -> Reta
                 mtm,
                 "Parakeet",
                 Some("NVIDIA, CC-BY-4.0. Speech recognition, run through Core ML."),
+                &[],
+                &[],
+            ),
+            ui::row(
+                mtm,
+                "S1-mini by Superwhisper",
+                Some("Apache 2.0 with naming clause. English dictation cleanup, run through llama.cpp."),
                 &[],
                 &[],
             ),
@@ -2706,7 +3031,7 @@ fn language_options_for(current: Option<&str>) -> Vec<(String, Option<String>)> 
 /// modelle für die meeting-zusammenfassung, als (label, backend, model).
 fn summary_choices(config: &Config) -> Vec<(String, Backend, Option<String>)> {
     let mut choices = vec![("Apple Intelligence".to_owned(), Backend::Apple, None)];
-    choices.extend(llm_options().into_iter().map(|(name, id)| (name, Backend::Local, Some(id))));
+    choices.extend(llm_options(false).into_iter().map(|(name, id)| (name, Backend::Local, Some(id))));
     choices.extend(config.llm.endpoints.iter().map(|endpoint| {
         (format!("Endpoint: {}", endpoint.id), Backend::Endpoint(endpoint.id.clone()), None)
     }));
@@ -2723,14 +3048,15 @@ fn summary_choice_index(choices: &[(String, Backend, Option<String>)], refine: &
 }
 
 /// installierte sprachmodelle als (anzeigename, catalog-id).
-fn llm_options() -> Vec<(String, String)> {
+fn llm_options(include_normalizers: bool) -> Vec<(String, String)> {
     let installed = installed_model_ids();
     Catalog::embedded()
         .map(|catalog| {
             catalog
                 .models
                 .iter()
-                .filter(|entry| entry.kind == "llm" && installed.contains(&entry.id))
+                .filter(|entry| entry.is_language_model() && installed.contains(&entry.id))
+                .filter(|entry| include_normalizers || !entry.is_normalizer())
                 .map(|entry| (entry.name.clone(), entry.id.clone()))
                 .collect()
         })
@@ -2749,7 +3075,7 @@ fn fill_popup(popup: &NSPopUpButton, labels: &[&str], selected: usize) {
 
 /// füllt das lokale model-popup neu und behält `selected` (eine catalog-id), falls installiert.
 fn refresh_model_options(editor: &ModeEditor, selected: Option<&str>) {
-    let options = llm_options();
+    let options = llm_options(true);
     if options.is_empty() {
         fill_popup(&editor.model_popup, &["No model installed"], 0);
         editor.model_popup.setEnabled(false);
@@ -2761,12 +3087,27 @@ fn refresh_model_options(editor: &ModeEditor, selected: Option<&str>) {
         let index = options.iter().position(|(_, id)| Some(id.as_str()) == selected).unwrap_or(0);
         fill_popup(&editor.model_popup, &labels, index);
         editor.model_popup.setEnabled(true);
-        editor.model_hint.setStringValue(&NSString::from_str(""));
+        refresh_model_hint(editor);
     }
 }
 
+fn refresh_model_hint(editor: &ModeEditor) {
+    let normalizer = selected_llm(editor).is_some_and(|id| {
+        Catalog::embedded()
+            .ok()
+            .and_then(|catalog| catalog.find(&id).map(|entry| entry.is_normalizer()))
+            .unwrap_or(false)
+    });
+    let hint = if normalizer {
+        "This model normalizes the transcript itself, so the prompt and temperature are ignored."
+    } else {
+        ""
+    };
+    editor.model_hint.setStringValue(&NSString::from_str(hint));
+}
+
 fn selected_llm(editor: &ModeEditor) -> Option<String> {
-    let options = llm_options();
+    let options = llm_options(true);
     options.get(editor.model_popup.indexOfSelectedItem().max(0) as usize).map(|(_, id)| id.clone())
 }
 
@@ -3269,48 +3610,6 @@ fn run_mode_test(delegate: Delegate, editor: &ModeEditor, rx: &TestRx) {
             let _ = tx.send(result);
         })
         .ok();
-}
-
-fn save_vocabulary(app: &AppDelegate, terms: &NSTextView, replacements: &NSTextView) -> Result<(), String> {
-    let mut parsed_terms = Vec::new();
-    for line in get_text(terms).lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let (exact, text) = match line.strip_prefix('=') {
-            Some(text) => (true, text.trim()),
-            None => (false, line),
-        };
-        if !text.is_empty() {
-            parsed_terms.push(Term { text: text.to_owned(), exact });
-        }
-    }
-    let mut parsed_replacements = Vec::new();
-    for (number, line) in get_text(replacements).lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Some((from, to)) = line.split_once("=>") else {
-            return Err(format!("Line {}: expected `from => to`.", number + 1));
-        };
-        let from = from.trim();
-        let to = to.trim().replace("\\n", "\n");
-        let (kind, from) = if from.len() >= 2 && from.starts_with('/') && from.ends_with('/') {
-            (ReplacementKind::Regex, &from[1..from.len() - 1])
-        } else {
-            (ReplacementKind::Phrase, from)
-        };
-        let replacement = Replacement { from: from.to_owned(), to, kind, case_sensitive: false };
-        validate_replacement(&replacement).map_err(|e| format!("Line {}: {e}", number + 1))?;
-        parsed_replacements.push(replacement);
-    }
-    app.update_config(|config| {
-        config.vocabulary.terms = parsed_terms;
-        config.vocabulary.replacements = parsed_replacements;
-    });
-    Ok(())
 }
 
 fn system_locale() -> String {

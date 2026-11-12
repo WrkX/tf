@@ -439,6 +439,28 @@
       ]
     },
     {
+      "id": "s1-mini-q4",
+      "name": "S1-mini",
+      "summary": "English dictation normalizer by Superwhisper; removes fillers and fixes punctuation",
+      "kind": "normalizer",
+      "engine": "llama.cpp",
+      "languages": [
+        "en"
+      ],
+      "ram_mb": 800,
+      "source": {
+        "repo": "superwhisper/s1-mini-GGUF",
+        "revision": "34add00a48a2e5d24e5a4ee5405a99620a3a240c"
+      },
+      "files": [
+        {
+          "path": "s1-mini-q4_k_m.gguf",
+          "size": 484219808,
+          "sha256": "3b41ebe2502cbd03e811d5d16b022f5ab551eda58d62597d152f89535003c634"
+        }
+      ]
+    },
+    {
       "id": "speaker-diarization",
       "name": "Speaker identification",
       "summary": "Tells remote speakers apart in meetings",
