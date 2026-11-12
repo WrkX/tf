@@ -17,7 +17,6 @@ members = [
 default-members = ["crates/app", "xtask"]
 
 [workspace.package]
-# die app-version steht in `VERSION`; dieser wert ist nur cargo-metadaten.
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.90"
